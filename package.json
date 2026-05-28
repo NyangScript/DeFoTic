@@ -1,0 +1,41 @@
+{
+  "name": "defotic-app",
+  "version": "1.0.0",
+  "main": "expo-router/entry",
+  "scripts": {
+    "start": "expo start",
+    "android": "expo run:android",
+    "android:release": "chcp 65001 && cd android && gradlew --no-daemon clean assembleRelease",
+    "ios": "expo run:ios",
+    "web": "expo start --web",
+    "dev": "expo start",
+    "build": "expo export",
+    "build:android-release": "powershell -ExecutionPolicy Bypass -File .\\build-android.ps1",
+    "lint": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@react-native-async-storage/async-storage": "^3.0.3",
+    "expo": "~54.0.33",
+    "expo-av": "^16.0.8",
+    "expo-constants": "~18.0.13",
+    "expo-linear-gradient": "~15.0.8",
+    "expo-linking": "~8.0.12",
+    "expo-router": "~6.0.23",
+    "expo-status-bar": "~3.0.9",
+    "firebase": "^12.13.0",
+    "react": "19.1.0",
+    "react-dom": "19.1.0",
+    "react-native": "0.81.5",
+    "react-native-ble-plx": "^3.5.1",
+    "react-native-chart-kit": "^6.12.2",
+    "react-native-reanimated": "~4.1.1",
+    "react-native-safe-area-context": "~5.6.0",
+    "react-native-screens": "~4.16.0",
+    "react-native-web": "^0.21.0"
+  },
+  "devDependencies": {
+    "@types/react": "~19.1.0",
+    "typescript": "~5.9.2"
+  },
+  "private": true
+}
