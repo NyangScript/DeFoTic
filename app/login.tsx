@@ -13,8 +13,29 @@ export default function LoginScreen() {
   const [name, setName] = useState('');
   const [patientId, setPatientId] = useState(''); // 환자 식별 코드 (의사용)
   const [loading, setLoading] = useState(false);
+  const [errors, setErrors] = useState({ name: '', patientId: '' });
+
+  const validate = () => {
+    let isValid = true;
+    const newErrors = { name: '', patientId: '' };
+
+    if (!name.trim()) {
+      newErrors.name = '이름을 입력해주세요.';
+      isValid = false;
+    }
+
+    if (!/^\d{6}$/.test(patientId.trim())) {
+      newErrors.patientId = '식별 코드는 6자리 숫자여야 합니다.';
+      isValid = false;
+    }
+
+    setErrors(newErrors);
+    return isValid;
+  };
 
   const handleLogin = () => {
+    if (!validate()) return;
+    
     setLoading(true);
     // 모의 로그인 처리
     setTimeout(() => {
@@ -47,24 +68,27 @@ export default function LoginScreen() {
             <View style={styles.inputGroup}>
               <Text style={styles.label}>이름</Text>
               <TextInput
-                style={styles.input}
+                style={[styles.input, errors.name ? styles.inputError : null]}
                 placeholder="환자 이름"
                 placeholderTextColor={theme.colors.textSecondary}
                 value={name}
-                onChangeText={setName}
+                onChangeText={(text) => { setName(text); setErrors(prev => ({ ...prev, name: '' })); }}
               />
+              {errors.name ? <Text style={styles.errorText}>{errors.name}</Text> : null}
             </View>
 
             <View style={styles.inputGroup}>
               <Text style={styles.label}>환자 식별 코드 (의사 공유용)</Text>
               <TextInput
-                style={styles.input}
+                style={[styles.input, errors.patientId ? styles.inputError : null]}
                 placeholder="예: 123456"
                 placeholderTextColor={theme.colors.textSecondary}
                 keyboardType="numeric"
+                maxLength={6}
                 value={patientId}
-                onChangeText={setPatientId}
+                onChangeText={(text) => { setPatientId(text); setErrors(prev => ({ ...prev, patientId: '' })); }}
               />
+              {errors.patientId ? <Text style={styles.errorText}>{errors.patientId}</Text> : null}
               <Text style={styles.helperText}>
                 이 코드를 담당 의사에게 전달하면 의사가 웹 대시보드를 통해 데이터를 확인할 수 있습니다.
               </Text>
@@ -131,6 +155,14 @@ const styles = StyleSheet.create({
     padding: theme.spacing.m,
     color: theme.colors.textPrimary,
     ...theme.typography.body1,
+  },
+  inputError: {
+    borderColor: theme.colors.error,
+  },
+  errorText: {
+    ...theme.typography.caption,
+    color: theme.colors.error,
+    marginTop: theme.spacing.xs,
   },
   helperText: {
     ...theme.typography.caption,

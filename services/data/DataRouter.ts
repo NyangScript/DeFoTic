@@ -1,41 +1,34 @@
-import { TicEvent } from '../../types/tic-event';
-import { ticEventStore } from './TicEventStore';
-// import { collection, addDoc } from 'firebase/firestore'; // Firebase 모듈은 사용자가 연동을 원할 때 활성화
-// import { db } from '../firebase/config';
+import { useEventStore } from '../../stores/useEventStore';
+import { useAnalysisStore } from '../../stores/useAnalysisStore';
+import { geminiAnalyzer } from '../ai/GeminiAnalyzer';
 
 class DataRouterService {
-  private isUploading = false;
+  public async triggerAnalysis(eventId: string): Promise<void> {
+    const analysisStore = useAnalysisStore.getState();
+    const eventStore = useEventStore.getState();
+    
+    if (analysisStore.isAnalyzing(eventId)) return;
 
-  public async uploadPendingData(): Promise<void> {
-    if (this.isUploading) return;
-    this.isUploading = true;
+    const event = eventStore.events.find(e => e.id === eventId);
+    if (!event) return;
+
+    analysisStore.startAnalyzing(eventId);
 
     try {
-      const events = await ticEventStore.getEvents();
-      const pendingEvents = events.filter(e => !e.videoClipUrl); // 아직 업로드 안 된 이벤트(모의 기준)
+      // 진행 상태 표시 위해 상태 업데이트
+      await eventStore.updateEventAnalysis(eventId, { ...event, analysisStatus: 'analyzing' });
+
+      // Gemini 분석 수행
+      const analyzedEvent = await geminiAnalyzer.analyzeTicEvent(event);
       
-      if (pendingEvents.length === 0) {
-        console.log('No pending data to upload.');
-        return;
-      }
-
-      console.log(`Uploading ${pendingEvents.length} events to Cloud...`);
-      
-      // Firebase 연동이 결정되면 아래 로직으로 대체
-      /*
-      for (const event of pendingEvents) {
-        await addDoc(collection(db, 'tic_events'), event);
-      }
-      */
-
-      // 모의 업로드 딜레이
-      await new Promise(resolve => setTimeout(resolve, 2000));
-      console.log('Upload complete.');
-
+      // 결과 저장
+      await eventStore.updateEventAnalysis(eventId, analyzedEvent);
+      console.log(`Analysis completed for event: ${eventId}`);
     } catch (error) {
-      console.error('Data routing error:', error);
+      console.error(`Analysis failed for event ${eventId}:`, error);
+      await eventStore.updateEventAnalysis(eventId, { ...event, analysisStatus: 'failed' });
     } finally {
-      this.isUploading = false;
+      analysisStore.finishAnalyzing(eventId);
     }
   }
 }

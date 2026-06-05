@@ -6,6 +6,7 @@ export default function TabLayout() {
   return (
     <Tabs
       screenOptions={{
+        headerShown: false,
         headerStyle: {
           backgroundColor: 'transparent',
           borderBottomWidth: 0,
@@ -13,11 +14,11 @@ export default function TabLayout() {
         headerTransparent: true,
         headerTintColor: theme.colors.textPrimary,
         tabBarStyle: {
-          backgroundColor: 'rgba(255,255,255,0.7)',
-          borderTopWidth: 1,
+          backgroundColor: 'rgba(255, 255, 255, 0.85)',
+          borderTopWidth: 0.5,
           borderTopColor: theme.colors.glassBorder,
-          height: 60,
-          paddingBottom: 8,
+          height: 65,
+          paddingBottom: 10,
           paddingTop: 8,
           position: 'absolute', // 탭바를 띄워서 뒤에 그래디언트가 보이도록
           elevation: 0,

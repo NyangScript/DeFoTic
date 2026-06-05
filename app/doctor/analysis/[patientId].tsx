@@ -9,6 +9,7 @@ import { GradientButton } from '../../../components/ui/GradientButton';
 import { TicEvent } from '../../../types/tic-event';
 import { GradientBackground } from '../../../components/ui/GradientBackground';
 import { ticEventStore } from '../../../services/data/TicEventStore';
+import { Ionicons } from '@expo/vector-icons';
 
 // 웹 전용 로그인 및 대시보드 화면
 export default function DoctorAnalysisScreen() {
@@ -75,6 +76,11 @@ export default function DoctorAnalysisScreen() {
                 <Text style={styles.eventTime}>
                   {new Date(event.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                 </Text>
+                <View style={styles.thumbnailContainer}>
+                  {event.videoPath ? (
+                    <Ionicons name="videocam-outline" size={24} color={theme.colors.primaryDark} />
+                  ) : null}
+                </View>
                 <Text style={styles.eventContext}>
                   {event.aiAnalysis ? event.aiAnalysis.situation : event.context || '분석 중...'}
                 </Text>
@@ -92,7 +98,7 @@ export default function DoctorAnalysisScreen() {
             </Text>
             
             {/* 영상 클립 영역 */}
-            <VideoPlayer url={selectedEvent.videoClipUrl} />
+            <VideoPlayer url={selectedEvent.videoPath} />
             
             <View style={styles.detailsGrid}>
               <GlassCard style={styles.detailCard}>
@@ -211,6 +217,15 @@ const styles = StyleSheet.create({
     ...theme.typography.caption,
     color: theme.colors.primaryDark,
     marginBottom: 4,
+  },
+  thumbnailContainer: {
+    width: 60,
+    height: 60,
+    borderRadius: theme.borderRadius.s,
+    backgroundColor: 'rgba(255,255,255,0.4)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginVertical: theme.spacing.s,
   },
   eventContext: {
     ...theme.typography.body1,

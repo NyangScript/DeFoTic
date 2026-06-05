@@ -36,7 +36,7 @@ export const TicEventCard = ({ event, onPress }: TicEventCardProps) => {
 
         <View style={styles.contentRow}>
           <View style={styles.thumbnailContainer}>
-            {event.videoBase64 ? (
+            {event.videoPath ? (
               <Ionicons name="videocam-outline" size={32} color={theme.colors.primaryDark} />
             ) : (
               <Ionicons name="image-outline" size={32} color={theme.colors.textSecondary} />
@@ -44,7 +44,14 @@ export const TicEventCard = ({ event, onPress }: TicEventCardProps) => {
           </View>
 
           <View style={styles.infoContainer}>
-            {event.analysisStatus === 'analyzing' ? (
+            {event.transferStatus === 'receiving' ? (
+              <View style={styles.analyzingContainer}>
+                <ActivityIndicator size="small" color={theme.colors.primaryDark} />
+                <Text style={styles.analyzingText}>
+                  데이터 수신 중... (V:{event.transferProgress?.video || 0}%, A:{event.transferProgress?.audio || 0}%)
+                </Text>
+              </View>
+            ) : event.analysisStatus === 'analyzing' ? (
               <View style={styles.analyzingContainer}>
                 <ActivityIndicator size="small" color={theme.colors.primaryDark} />
                 <Text style={styles.analyzingText}>AI 분석 중...</Text>
@@ -69,7 +76,7 @@ export const TicEventCard = ({ event, onPress }: TicEventCardProps) => {
               </>
             ) : (
               <>
-                <Text style={styles.contextText}>"{event.context || '상황 정보 없음'}"</Text>
+                <Text style={styles.contextText}>"{event.context || '대기 중...'}"</Text>
                 <View style={styles.metaRow}>
                   <Text style={styles.typeText}>
                     틱 유형: {event.type === 'vocal' ? '음성' : event.type === 'motor' ? '운동' : '복합'}

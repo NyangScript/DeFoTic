@@ -3,15 +3,9 @@ import { BLE_CONFIG } from '../../constants/ble-config';
 import { BleDevice } from '../../types/ble';
 import { Platform, PermissionsAndroid, AppState, AppStateStatus } from 'react-native';
 import { Buffer } from 'buffer';
-
-export interface TicEventPayload {
-  timestamp: number;
-  tic_type: string;
-  intensity: number;
-  has_video: boolean;
-}
-
-type TicEventCallback = (payload: TicEventPayload) => void;
+import { useDeviceStore } from '../../stores/useDeviceStore';
+import { useEventStore } from '../../stores/useEventStore';
+import { transferProtocolLayer } from './TransferProtocolLayer';
 
 export type ScanDeviceCallback = (devices: BleDevice[]) => void;
 export type ScanErrorCallback = (error: BleError | string) => void;
@@ -24,7 +18,6 @@ class BleManagerService {
   private manager: PlxBleManager | null = null;
   private connectedDevice: Device | null = null;
   private isScanning: boolean = false;
-  private ticEventCallbacks: TicEventCallback[] = [];
 
   private discoveredDevices: Map<string, BleDevice> = new Map();
   private scanDeviceCallback: ScanDeviceCallback | null = null;
@@ -291,6 +284,17 @@ class BleManagerService {
       });
       
       this.connectedDevice = device;
+      
+      // Request maximum MTU for large payloads (status JSON, chunks)
+      if (Platform.OS === 'android') {
+        try {
+          await device.requestMTU(512);
+          console.log('[BLE] MTU requested: 512');
+        } catch (e) {
+          console.warn('[BLE] MTU request failed:', e);
+        }
+      }
+
       await device.discoverAllServicesAndCharacteristics();
 
       // ── 1. Service UUID 검증 ──
@@ -312,7 +316,11 @@ class BleManagerService {
       }
 
       // ── 3. 검증 성공 시에만 모니터링 시작 ──
+      useDeviceStore.getState().setConnected(device.name || device.localName || 'DeFoTic Device');
       this.startMonitoring(device);
+
+      // ── 4. TIME 동기화 전송 (하드웨어 태스크 기동 트리거) ──
+      await this.sendTimeSync(device);
     } catch (error: any) {
       console.error('Connection/Verification error:', error);
       // 에러 발생 시 즉시 연결 해제 및 초기화
@@ -321,6 +329,25 @@ class BleManagerService {
         this.connectedDevice = null;
       }
       throw error;
+    }
+  }
+
+  /**
+   * 하드웨어의 timeSynced 플래그를 true로 만들어 FreeRTOS 태스크를 기동시킵니다.
+   * 하드웨어의 TimeCallback은 "TIME:" 접두사가 있는 값을 수신하면 timeSynced = true 처리합니다.
+   */
+  private async sendTimeSync(device: Device) {
+    try {
+      const timeStr = `TIME:${Math.floor(Date.now() / 1000)}`;
+      const base64Value = Buffer.from(timeStr, 'utf8').toString('base64');
+      await device.writeCharacteristicWithResponseForService(
+        BLE_CONFIG.SERVICES.TIC_DATA,
+        BLE_CONFIG.CHARACTERISTICS.TIC_EVENT_STREAM,
+        base64Value,
+      );
+      console.log('[BLE] Time sync sent:', timeStr);
+    } catch (e) {
+      console.warn('[BLE] Time sync write failed (non-critical):', e);
     }
   }
 
@@ -337,30 +364,38 @@ class BleManagerService {
   private handleCharacteristicUpdate(error: BleError | null, characteristic: Characteristic | null) {
     if (error) {
       console.error('Characteristic monitoring error:', error);
+      useDeviceStore.getState().setDisconnected();
       return;
     }
 
     if (characteristic?.value) {
       try {
         const decoded = Buffer.from(characteristic.value, 'base64').toString('utf8');
-        const payload: TicEventPayload = JSON.parse(decoded);
-        this.ticEventCallbacks.forEach(cb => cb(payload));
+        const payload = JSON.parse(decoded);
+        
+        if (payload) {
+          // BLE Payload 처리
+          if (payload.type === 'status') {
+            useDeviceStore.getState().updateFromBle(payload);
+          } else {
+            // event_start, video_chunk, audio_chunk, event_end 등 전송 프로토콜 계층으로 위임
+            transferProtocolLayer.handleMessage(payload);
+          }
+        }
       } catch (e) {
-        console.error('Failed to parse BLE payload', e);
+        // JSON이 아닌 raw 문자열일 수도 있음 (예: 이전 프로토콜 잔여)
+        const decodedStr = Buffer.from(characteristic.value, 'base64').toString('utf8');
+        console.warn('Non-JSON BLE data received. Raw decoded:', decodedStr);
       }
     }
-  }
-
-  public onTicEventReceived(callback: TicEventCallback) {
-    this.ticEventCallbacks.push(callback);
   }
 
   public async disconnectDevice() {
     if (this.manager && this.connectedDevice) {
       await this.manager.cancelDeviceConnection(this.connectedDevice.id);
       this.connectedDevice = null;
-      this.ticEventCallbacks = [];
     }
+    useDeviceStore.getState().setDisconnected();
   }
 
   public getConnectedDevice() {
@@ -369,3 +404,4 @@ class BleManagerService {
 }
 
 export const bleManager = new BleManagerService();
+

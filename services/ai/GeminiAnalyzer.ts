@@ -1,3 +1,4 @@
+import { File } from 'expo-file-system';
 import { GEMINI_CONFIG } from '../../constants/gemini-config';
 import { TicEvent } from '../../types/tic-event';
 
@@ -17,12 +18,25 @@ export class GeminiAnalyzerService {
 
       const parts: any[] = [{ text: prompt }];
 
+      let base64Data = null;
+      
+      if (event.videoPath) {
+        try {
+          const FileSystem = require('expo-file-system/legacy');
+          base64Data = await FileSystem.readAsStringAsync(event.videoPath, {
+            encoding: FileSystem.EncodingType.Base64,
+          });
+        } catch (e) {
+          console.error('[Gemini] Failed to read video file for analysis:', e);
+        }
+      }
+
       // 영상이 base64로 제공된 경우 멀티모달 분석 추가
-      if (event.videoBase64) {
+      if (base64Data) {
         parts.unshift({
           inlineData: {
-            mimeType: 'video/mp4', // 또는 ESP32-S3에서 전송하는 실제 포맷
-            data: event.videoBase64,
+            mimeType: 'video/avi', // ESP32-S3 uses AVI (MJPEG)
+            data: base64Data,
           },
         });
       }

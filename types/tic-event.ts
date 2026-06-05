@@ -6,9 +6,14 @@ export interface TicEvent {
   type: TicEventType;
   intensity: number; // 1-10
   context?: string; // e.g., "점심 식사시간", "수업 시간"
-  videoClipUrl?: string; // 클라우드에 업로드된 영상 URL
-  videoBase64?: string; // BLE로 수신된 임시 base64 영상 데이터
+  videoPath?: string; // 파일 시스템 절대 경로 (로컬)
+  audioPath?: string; // 파일 시스템 절대 경로 (로컬)
   
+  transferStatus?: 'pending' | 'receiving' | 'completed' | 'failed';
+  transferProgress?: {
+    video: number; // 0~100
+    audio: number; // 0~100
+  };
   // ── Gemini LLM 분석 결과 ──
   aiAnalysis?: {
     situation: string;           // "점심 식사 중, 학교 급식실에서..."
