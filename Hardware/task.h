@@ -24,8 +24,4 @@ void saveAudioToWav(
     String folder
 );
 
-void sendImageBLE(
-    String path
-);
-
 #endif

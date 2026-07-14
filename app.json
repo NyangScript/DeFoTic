@@ -41,9 +41,7 @@
           "bluetoothAlwaysPermission": "Allow $(PRODUCT_NAME) to connect to bluetooth devices"
         }
       ],
-      "expo-font",
-      "expo-video",
-      "expo-audio"
+      "expo-font"
     ]
   }
 }

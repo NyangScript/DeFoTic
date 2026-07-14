@@ -1,4 +1,4 @@
-import { documentDirectory, getInfoAsync, makeDirectoryAsync, writeAsStringAsync, deleteAsync, EncodingType } from 'expo-file-system/legacy';
+import { documentDirectory, getInfoAsync, makeDirectoryAsync, copyAsync, deleteAsync } from 'expo-file-system/legacy';
 
 const STORAGE_ROOT = `${documentDirectory}events/`;
 
@@ -34,18 +34,21 @@ export class MediaRepository {
   }
 
   /**
-   * Saves a base64 encoded media file to the event directory
+   * C-to-C Import: 외부 저장소(SD 카드)에서 선택된 미디어 파일을
+   * 이벤트 디렉토리로 복사하고 로컬 경로를 반환합니다.
    */
-  static async saveMedia(eventId: string, fileType: 'video' | 'audio', base64Data: string): Promise<string> {
+  static async importMediaFile(
+    eventId: string,
+    fileType: 'video' | 'audio',
+    partIndex: number,
+    sourceUri: string,
+  ): Promise<string> {
     const dirPath = await this.prepareEventDirectory(eventId);
     const ext = fileType === 'video' ? 'avi' : 'wav';
-    const filePath = `${dirPath}${fileType}.${ext}`;
-    
-    await writeAsStringAsync(filePath, base64Data, {
-      encoding: EncodingType.Base64,
-    });
-    
-    return filePath;
+    const destPath = `${dirPath}${fileType}_${partIndex}.${ext}`;
+
+    await copyAsync({ from: sourceUri, to: destPath });
+    return destPath;
   }
 
   /**

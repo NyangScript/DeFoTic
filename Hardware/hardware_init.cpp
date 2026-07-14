@@ -1,6 +1,7 @@
 #include "hardware_init.h"
 
 #include "esp_camera.h"
+#include <sys/time.h>
 
 // ==========================================
 // GLOBALS
@@ -79,6 +80,21 @@ class TimeCallback
             )
         ) {
 
+            // "TIME:<epoch초>" 파싱 후 RTC 설정 → 이벤트 폴더/파일명이 실제 시각 기준이 된다
+            unsigned long epoch =
+                strtoul(
+                    value.c_str() + 5,
+                    NULL,
+                    10
+                );
+
+            if(epoch > 0) {
+                struct timeval tv;
+                tv.tv_sec = (time_t)epoch;
+                tv.tv_usec = 0;
+                settimeofday(&tv, NULL);
+            }
+
             timeSynced = true;
 
             Serial.println(
@@ -140,8 +156,12 @@ void initCamera() {
 
 
 
+    // OV2640 JPEG 모드 표준 클럭. 4MHz에서는 센서 파이프라인이 ~5fps로
+    // 제한되므로 20MHz로 상향해 QQVGA JPEG 30fps 캡처를 가능하게 한다.
+    // (실효 fps는 SD 쓰기 속도에 따라 자연 조절되며, AVI 헤더에는
+    //  finalize 시점의 실측 fps가 기록된다.)
     config.xclk_freq_hz =
-        4000000;
+        20000000;
 
 
 
@@ -368,6 +388,11 @@ void initSD() {
 
     if(!SD.exists("/buffer")) {
         SD.mkdir("/buffer");
+    }
+
+    // 이벤트 저장 루트 — 앱 SAF 동기화의 선택 대상 폴더
+    if(!SD.exists("/DEFOTIC")) {
+        SD.mkdir("/DEFOTIC");
     }
 
     Serial.println(

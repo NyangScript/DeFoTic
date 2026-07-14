@@ -1,8 +1,35 @@
-import { Tabs } from 'expo-router';
+import { Tabs, useRouter } from 'expo-router';
 import { theme } from '../../constants/theme';
 import { Ionicons } from '@expo/vector-icons';
+import { useEffect, useRef } from 'react';
+import { BackHandler, Platform, ToastAndroid } from 'react-native';
 
 export default function TabLayout() {
+  const router = useRouter();
+  const lastBackPress = useRef(0);
+
+  // 온보딩 플로우가 전부 replace로 전환되어 탭 도달 시 백스택이 비어 있다.
+  // 하드웨어 뒤로가기 → "한 번 더 누르면 종료" 패턴으로 처리 (GO_BACK 미처리 오류 방지)
+  useEffect(() => {
+    if (Platform.OS !== 'android') return;
+
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      // 탭 위에 다른 화면(페어링 모달 등)이 떠 있으면 기본 뒤로가기에 맡긴다
+      if (router.canGoBack()) return false;
+
+      const now = Date.now();
+      if (now - lastBackPress.current < 2000) {
+        BackHandler.exitApp();
+        return true;
+      }
+      lastBackPress.current = now;
+      ToastAndroid.show('한 번 더 뒤로가기를 누르면 종료됩니다', ToastAndroid.SHORT);
+      return true;
+    });
+
+    return () => sub.remove();
+  }, [router]);
+
   return (
     <Tabs
       screenOptions={{

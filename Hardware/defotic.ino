@@ -5,10 +5,12 @@
 #include "hardware_init.h"
 #include "task.h"
 #include "telemetry.h"
+#include "usb_msc.h"
 
 int16_t *audioBuffer = nullptr;
 volatile size_t audioWriteIndex = 0;
 bool ticDetected = false;
+volatile float lastConfidence = 0.0f;
 volatile bool eventSaving = false;
 int frameIndex = 0;
 String lastImagePath = "";
@@ -28,6 +30,9 @@ void setup() {
 
     // 2. 하드웨어 종합 초기화 (Serial, SD, Camera, I2S, BLE)
     initHardware();
+
+    // 3. USB MSC — C-to-C 연결 시 SD를 USB 드라이브로 노출
+    initUsbMsc();
 
     Serial.printf("PSRAM SIZE: %d MB\n", ESP.getPsramSize() / 1024 / 1024);
 

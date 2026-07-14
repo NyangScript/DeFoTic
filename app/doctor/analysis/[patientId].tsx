@@ -3,7 +3,6 @@ import { View, Text, StyleSheet, ScrollView, Platform, TextInput, TouchableOpaci
 import { useLocalSearchParams } from 'expo-router';
 import { theme } from '../../../constants/theme';
 import { TicEventCard } from '../../../components/analysis/TicEventCard';
-import { VideoPlayer } from '../../../components/analysis/VideoPlayer';
 import { GlassCard } from '../../../components/ui/GlassCard';
 import { GradientButton } from '../../../components/ui/GradientButton';
 import { TicEvent } from '../../../types/tic-event';
@@ -97,9 +96,6 @@ export default function DoctorAnalysisScreen() {
               {selectedEvent.aiAnalysis ? selectedEvent.aiAnalysis.situation : selectedEvent.context} (상세 분석)
             </Text>
             
-            {/* 영상 클립 영역 */}
-            <VideoPlayer url={selectedEvent.videoPath} />
-            
             <View style={styles.detailsGrid}>
               <GlassCard style={styles.detailCard}>
                 <Text style={styles.detailLabel}>틱 유형</Text>
@@ -108,8 +104,13 @@ export default function DoctorAnalysisScreen() {
                 </Text>
               </GlassCard>
               <GlassCard style={styles.detailCard}>
-                <Text style={styles.detailLabel}>감지 강도</Text>
-                <Text style={styles.detailValue}>{selectedEvent.intensity} / 10</Text>
+                <Text style={styles.detailLabel}>틱 강도 (AI 분석)</Text>
+                <Text style={styles.detailValue}>
+                  {selectedEvent.aiAnalysis
+                    ? selectedEvent.aiAnalysis.severity === 'high' ? '높음'
+                      : selectedEvent.aiAnalysis.severity === 'medium' ? '보통' : '낮음'
+                    : '분석 대기'}
+                </Text>
               </GlassCard>
             </View>
 

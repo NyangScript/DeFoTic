@@ -3,67 +3,57 @@ import { TicEvent } from '../../types/tic-event';
 
 export class EventRepository {
   /**
-   * Initializes a new Event Record in the store when an event metadata is received.
+   * BLE tic_event 메타데이터 수신 시 이벤트 레코드를 생성합니다.
+   * 미디어는 아직 기기 SD 카드에 있으므로 'pending_media' 상태로 시작합니다.
    */
-  static async createEventRecord(
+  static async createFromTicEvent(
     eventId: string,
-    timestampMs: number,
-    videoSize: number,
-    audioSize: number
+    timestampSec: number,
+    confidence: number
   ) {
-    const timestamp = new Date(timestampMs > 1e12 ? timestampMs : timestampMs * 1000).toISOString();
-    
+    const timestamp = new Date(
+      timestampSec > 1e12 ? timestampSec : timestampSec * 1000
+    ).toISOString();
+
     const newEvent: TicEvent = {
       id: eventId,
       timestamp,
-      type: 'vocal', // This could be updated later by LLM
-      intensity: 1, // Default intensity
+      type: 'vocal', // 추후 LLM 분석으로 갱신
+      intensity: Math.max(1, Math.min(10, Math.round(confidence * 10))),
+      detectionConfidence: confidence,
+      transferStatus: 'pending_media',
       analysisStatus: 'pending',
-      transferStatus: 'receiving',
-      transferProgress: {
-        video: 0,
-        audio: 0,
-      },
     };
 
     await useEventStore.getState().addEvent(newEvent);
   }
 
   /**
-   * Updates transfer progress for an event
+   * BLE 메타데이터를 놓친 이벤트를 C-to-C Import 시 파일명 타임스탬프로 복원합니다.
    */
-  static async updateTransferProgress(eventId: string, type: 'video' | 'audio', progress: number) {
-    const currentEvents = useEventStore.getState().events;
-    const ev = currentEvents.find(e => e.id === eventId);
-    if (!ev) return;
-
-    const transferProgress = {
-      video: ev.transferProgress?.video || 0,
-      audio: ev.transferProgress?.audio || 0,
-      [type]: progress,
+  static async createFromImport(eventId: string, timestampMs: number) {
+    const newEvent: TicEvent = {
+      id: eventId,
+      timestamp: new Date(timestampMs).toISOString(),
+      type: 'vocal', // 추후 LLM 분석으로 갱신
+      intensity: 5,
+      transferStatus: 'pending_media',
+      analysisStatus: 'pending',
     };
 
-    // If both are 100%, we wait for event_end to mark 'completed'
-    await useEventStore.getState().updateEvent(eventId, { transferProgress });
+    await useEventStore.getState().addEvent(newEvent);
   }
 
   /**
-   * Updates file paths and marks transfer as complete
+   * C-to-C Import로 미디어 파일이 매핑되면 경로를 기록하고 'synced' 처리합니다.
    */
-  static async completeTransfer(eventId: string, videoPath: string, audioPath: string) {
+  static async attachMedia(
+    eventId: string,
+    media: { videoPath?: string; audioPath?: string }
+  ) {
     await useEventStore.getState().updateEvent(eventId, {
-      videoPath,
-      audioPath,
-      transferStatus: 'completed',
-    });
-  }
-
-  /**
-   * Marks a transfer as failed
-   */
-  static async failTransfer(eventId: string) {
-    await useEventStore.getState().updateEvent(eventId, {
-      transferStatus: 'failed',
+      ...media,
+      transferStatus: 'synced',
     });
   }
 }

@@ -110,7 +110,13 @@ export default function PairingScreen() {
     try {
       await bleManager.connectToDevice(device.id);
       if (!mounted.current) return;
-      router.replace('/login');
+      // 메인 화면에서 재연결하러 들어온 경우(스택 위에 떠 있음)에는 원래 화면으로 복귀,
+      // 최초 온보딩 플로우에서는 환자 정보 등록으로 진행
+      if (router.canGoBack()) {
+        router.back();
+      } else {
+        router.replace('/login');
+      }
     } catch (error: any) {
       if (!mounted.current) return;
       setConnectingId(null);

@@ -4,8 +4,7 @@ import { BleDevice } from '../../types/ble';
 import { Platform, PermissionsAndroid, AppState, AppStateStatus } from 'react-native';
 import { Buffer } from 'buffer';
 import { useDeviceStore } from '../../stores/useDeviceStore';
-import { useEventStore } from '../../stores/useEventStore';
-import { transferProtocolLayer } from './TransferProtocolLayer';
+import { EventRepository } from '../data/EventRepository';
 
 export type ScanDeviceCallback = (devices: BleDevice[]) => void;
 export type ScanErrorCallback = (error: BleError | string) => void;
@@ -274,62 +273,97 @@ class BleManagerService {
     return this.isScanning;
   }
 
+  /**
+   * BLE 연결은 직후 수 초간 불안정해 첫 시도에서 끊기는 경우가 흔하다.
+   * (예: "Device was disconnected" during MTU/discovery)
+   * → 일시적 오류는 짧은 대기 후 자동 재시도하고,
+   *   UUID 검증 실패(다른 기기)는 재시도 없이 즉시 실패 처리한다.
+   */
+  private static readonly CONNECT_MAX_ATTEMPTS = 3;
+  private static readonly CONNECT_RETRY_DELAY_MS = 800;
+
   public async connectToDevice(deviceId: string): Promise<void> {
     if (!this.manager) throw new Error('BleManager가 초기화되지 않았습니다.');
 
     this.stopContinuousScan();
-    try {
-      const device = await this.manager.connectToDevice(deviceId, {
-        timeout: BLE_CONFIG.CONNECTION.CONNECTION_TIMEOUT_MS,
-      });
-      
-      this.connectedDevice = device;
-      
-      // Request maximum MTU for large payloads (status JSON, chunks)
-      if (Platform.OS === 'android') {
-        try {
-          await device.requestMTU(512);
-          console.log('[BLE] MTU requested: 512');
-        } catch (e) {
-          console.warn('[BLE] MTU request failed:', e);
+
+    let lastError: any = null;
+    for (let attempt = 1; attempt <= BleManagerService.CONNECT_MAX_ATTEMPTS; attempt++) {
+      try {
+        await this.attemptConnection(deviceId);
+        return;
+      } catch (error: any) {
+        lastError = error;
+        console.warn(`[BLE] Connect attempt ${attempt} failed:`, error?.message || error);
+
+        // 연결 잔재 정리
+        if (this.connectedDevice) {
+          await this.manager.cancelDeviceConnection(this.connectedDevice.id).catch(() => {});
+          this.connectedDevice = null;
+        }
+
+        // 검증 실패(다른 BLE 장치)는 재시도해도 결과가 같으므로 즉시 중단
+        if (error?.isVerificationError) break;
+
+        if (attempt < BleManagerService.CONNECT_MAX_ATTEMPTS) {
+          await new Promise(resolve => setTimeout(resolve, BleManagerService.CONNECT_RETRY_DELAY_MS));
         }
       }
-
-      await device.discoverAllServicesAndCharacteristics();
-
-      // ── 1. Service UUID 검증 ──
-      const services = await device.services();
-      const targetServiceUuid = BLE_CONFIG.SERVICES.TIC_DATA.toLowerCase();
-      const hasService = services.some(s => s.uuid.toLowerCase() === targetServiceUuid);
-      
-      if (!hasService) {
-        throw new Error('DeFoTic 장치가 아닙니다. (Service UUID 없음)');
-      }
-
-      // ── 2. Characteristic UUID 검증 ──
-      const characteristics = await device.characteristicsForService(BLE_CONFIG.SERVICES.TIC_DATA);
-      const targetCharUuid = BLE_CONFIG.CHARACTERISTICS.TIC_EVENT_STREAM.toLowerCase();
-      const hasChar = characteristics.some(c => c.uuid.toLowerCase() === targetCharUuid);
-
-      if (!hasChar) {
-        throw new Error('지원되지 않는 BLE 장치입니다. (Characteristic UUID 없음)');
-      }
-
-      // ── 3. 검증 성공 시에만 모니터링 시작 ──
-      useDeviceStore.getState().setConnected(device.name || device.localName || 'DeFoTic Device');
-      this.startMonitoring(device);
-
-      // ── 4. TIME 동기화 전송 (하드웨어 태스크 기동 트리거) ──
-      await this.sendTimeSync(device);
-    } catch (error: any) {
-      console.error('Connection/Verification error:', error);
-      // 에러 발생 시 즉시 연결 해제 및 초기화
-      if (this.connectedDevice) {
-        await this.manager.cancelDeviceConnection(this.connectedDevice.id).catch(() => {});
-        this.connectedDevice = null;
-      }
-      throw error;
     }
+
+    console.error('Connection/Verification error:', lastError);
+    throw lastError;
+  }
+
+  private async attemptConnection(deviceId: string): Promise<void> {
+    if (!this.manager) throw new Error('BleManager가 초기화되지 않았습니다.');
+
+    // requestMTU를 연결 옵션에 포함하면 연결 수립 단계에서 함께 협상되어
+    // 별도 requestMTU 호출보다 초기 끊김에 강하다.
+    const device = await this.manager.connectToDevice(deviceId, {
+      timeout: BLE_CONFIG.CONNECTION.CONNECTION_TIMEOUT_MS,
+      requestMTU: 512,
+    });
+
+    this.connectedDevice = device;
+
+    await device.discoverAllServicesAndCharacteristics();
+
+    // ── 1. Service UUID 검증 ──
+    const services = await device.services();
+    const targetServiceUuid = BLE_CONFIG.SERVICES.TIC_DATA.toLowerCase();
+    const hasService = services.some(s => s.uuid.toLowerCase() === targetServiceUuid);
+
+    if (!hasService) {
+      const err: any = new Error('DeFoTic 장치가 아닙니다. (Service UUID 없음)');
+      err.isVerificationError = true;
+      throw err;
+    }
+
+    // ── 2. Characteristic UUID 검증 ──
+    const characteristics = await device.characteristicsForService(BLE_CONFIG.SERVICES.TIC_DATA);
+    const targetCharUuid = BLE_CONFIG.CHARACTERISTICS.TIC_EVENT_STREAM.toLowerCase();
+    const hasChar = characteristics.some(c => c.uuid.toLowerCase() === targetCharUuid);
+
+    if (!hasChar) {
+      const err: any = new Error('지원되지 않는 BLE 장치입니다. (Characteristic UUID 없음)');
+      err.isVerificationError = true;
+      throw err;
+    }
+
+    // ── 3. 검증 성공 시에만 모니터링 시작 ──
+    useDeviceStore.getState().setConnected(device.name || device.localName || 'DeFoTic Device');
+    this.startMonitoring(device);
+
+    // ── 4. 연결 해제 감지 → 상태 스토어 반영 ──
+    device.onDisconnected(() => {
+      console.warn('[BLE] Device disconnected');
+      this.connectedDevice = null;
+      useDeviceStore.getState().setDisconnected();
+    });
+
+    // ── 5. TIME 동기화 전송 (하드웨어 태스크 기동 트리거) ──
+    await this.sendTimeSync(device);
   }
 
   /**
@@ -374,12 +408,26 @@ class BleManagerService {
         const payload = JSON.parse(decoded);
         
         if (payload) {
-          // BLE Payload 처리
+          // BLE Payload 처리 (투트랙: 상태 텔레메트리 + 틱 이벤트 메타데이터)
           if (payload.type === 'status') {
             useDeviceStore.getState().updateFromBle(payload);
+          } else if (payload.type === 'tic_event') {
+            // 미디어 없이 메타데이터만 즉시 기록 → 대시보드 실시간 반영
+            console.log(`[BLE] tic_event received: ${payload.eventId}`);
+
+            // RTC 미동기 기기의 타임스탬프 방어:
+            // epoch≈0 값이 KST로 변환되면 1970-01-01 09:0X처럼 표시되므로,
+            // 2001년(1e9초) 이전 값은 신뢰하지 않고 수신 시각으로 대체한다.
+            const rawTs = Number(payload.timestamp);
+            const timestampSec = rawTs > 1e9 ? rawTs : Math.floor(Date.now() / 1000);
+
+            EventRepository.createFromTicEvent(
+              payload.eventId,
+              timestampSec,
+              typeof payload.confidence === 'number' ? payload.confidence : 0,
+            );
           } else {
-            // event_start, video_chunk, audio_chunk, event_end 등 전송 프로토콜 계층으로 위임
-            transferProtocolLayer.handleMessage(payload);
+            console.warn(`[BLE] Unknown payload type: ${payload.type}`);
           }
         }
       } catch (e) {

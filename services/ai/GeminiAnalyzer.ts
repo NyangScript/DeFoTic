@@ -12,34 +12,44 @@ export class GeminiAnalyzerService {
     try {
       const prompt = GEMINI_CONFIG.PROMPT_TEMPLATE
         .replace('{timestamp}', new Date(event.timestamp).toLocaleString('ko-KR'))
-        .replace('{type}', event.type)
-        .replace('{intensity}', event.intensity.toString())
+        .replace('{confidence}', typeof event.detectionConfidence === 'number' ? `${Math.round(event.detectionConfidence * 100)}%` : '정보 없음')
         .replace('{context}', event.context || '정보 없음');
 
       const parts: any[] = [{ text: prompt }];
 
-      let base64Data = null;
-      
-      if (event.videoPath) {
+      // 합본(muxing) 없이 영상과 음성을 별도 파트로 첨부한다.
+      // Gemini inline 요청은 총 ~20MB 제한이므로 base64 팽창(×4/3)을 감안해
+      // 원본 합산 14MB 예산 내에서만 첨부한다. 예산 초과 파일은 건너뛰어
+      // 요청 전체가 400으로 실패하는 것을 방지한다.
+      // (음성 틱이 핵심 근거이므로 용량이 작은 오디오를 우선 첨부)
+      const FileSystem = require('expo-file-system/legacy');
+      const INLINE_BUDGET_BYTES = 14 * 1024 * 1024;
+      let usedBytes = 0;
+
+      const attachMedia = async (path: string, mimeType: string) => {
         try {
-          const FileSystem = require('expo-file-system/legacy');
-          base64Data = await FileSystem.readAsStringAsync(event.videoPath, {
+          const info = await FileSystem.getInfoAsync(path);
+          const size = info.exists && typeof info.size === 'number' ? info.size : 0;
+          if (size === 0) {
+            console.warn(`[Gemini] Skipping ${mimeType} — file missing or empty: ${path}`);
+            return;
+          }
+          if (usedBytes + size > INLINE_BUDGET_BYTES) {
+            console.warn(`[Gemini] Skipping ${mimeType} (${(size / 1e6).toFixed(1)}MB) — inline budget exceeded`);
+            return;
+          }
+          const data = await FileSystem.readAsStringAsync(path, {
             encoding: FileSystem.EncodingType.Base64,
           });
+          parts.unshift({ inlineData: { mimeType, data } });
+          usedBytes += size;
         } catch (e) {
-          console.error('[Gemini] Failed to read video file for analysis:', e);
+          console.error(`[Gemini] Failed to attach ${mimeType}:`, e);
         }
-      }
+      };
 
-      // 영상이 base64로 제공된 경우 멀티모달 분석 추가
-      if (base64Data) {
-        parts.unshift({
-          inlineData: {
-            mimeType: 'video/avi', // ESP32-S3 uses AVI (MJPEG)
-            data: base64Data,
-          },
-        });
-      }
+      if (event.audioPath) await attachMedia(event.audioPath, 'audio/wav');   // IMA ADPCM WAV
+      if (event.videoPath) await attachMedia(event.videoPath, 'video/avi');   // MJPEG AVI
 
       const requestBody = {
         contents: [
@@ -86,6 +96,10 @@ export class GeminiAnalyzerService {
 
       return {
         ...event,
+        // 틱 유형 분류도 LLM 판단을 채택 (미분류 시 기존값 유지)
+        type: ['vocal', 'motor', 'complex'].includes(parsedAnalysis.ticType)
+          ? parsedAnalysis.ticType
+          : event.type,
         aiAnalysis: {
           situation: parsedAnalysis.situation || '상황 추정 불가',
           environment: parsedAnalysis.environment || '환경 분석 불가',
