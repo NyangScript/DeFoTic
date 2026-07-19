@@ -1,5 +1,5 @@
-import React from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, ScrollView } from 'react-native';
+import React, { useEffect, useMemo, useState } from 'react';
+import { View, Text, StyleSheet, TouchableOpacity, ScrollView, Alert, AppState } from 'react-native';
 import { useRouter } from 'expo-router';
 import { LinearGradient } from 'expo-linear-gradient';
 import { theme } from '../../constants/theme';
@@ -7,24 +7,104 @@ import { Ionicons } from '@expo/vector-icons';
 import { GradientBackground } from '../../components/ui/GradientBackground';
 import { useDeviceStore } from '../../stores/useDeviceStore';
 import { useEventStore } from '../../stores/useEventStore';
+import { firebaseSync } from '../../services/cloud/FirebaseSync';
+import { bleManager } from '../../services/ble/BleManager';
+import { profileStore } from '../../services/data/ProfileStore';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 export default function MainHubScreen() {
   const router = useRouter();
-  const { isConnected, deviceName } = useDeviceStore();
+  // 필요한 필드만 개별 구독 — 전체 스토어 구독은 3초 주기 BLE 텔레메트리
+  // 패킷(lastUpdated 갱신)마다 홈 화면 전체를 리렌더시킨다
+  const isConnected = useDeviceStore((state) => state.isConnected);
+  const deviceName = useDeviceStore((state) => state.deviceName);
   const events = useEventStore((state) => state.events);
 
-  const today = new Date().toDateString();
-  const todayEventsCount = events.filter(
-    (e) => new Date(e.timestamp).toDateString() === today,
-  ).length;
-  const pendingCount = events.filter(e => e.transferStatus === 'pending_media').length;
-  const analyzedCount = events.filter(e => e.analysisStatus === 'completed').length;
+  // 환자 식별 코드 — 의료진이 대시보드에서 이 코드로 데이터를 열람한다
+  const [patientCode, setPatientCode] = useState<string | null>(null);
+  const [patientName, setPatientName] = useState<string | null>(null);
+  useEffect(() => {
+    firebaseSync.getPatientCode().then(setPatientCode).catch(() => {});
+    profileStore.get().then(p => setPatientName(p?.name ?? null)).catch(() => {});
+
+    // 코드 변경 구독: 클라우드 클레임 중 충돌로 코드가 재생성되면
+    // 이미 표시된 코드가 스테일이 된다 — 즉시 갱신하고 명시 알림으로
+    // "의사에게 새 코드를 알려야 함"을 전달한다.
+    const unsubscribe = firebaseSync.onPatientCodeChanged(code => {
+      setPatientCode(code);
+      Alert.alert(
+        '공유 코드가 변경되었습니다',
+        `드물게 다른 환자와 코드가 겹쳐 새 코드(${code})가 발급되었습니다.\n의료진에게는 반드시 새 코드를 알려주세요.`,
+      );
+    });
+    return unsubscribe;
+  }, []);
+
+  // ── BLE 자동 재연결 (자동 로그인 동선의 후반부) ──
+  // 온보딩 게이트로 페어링 화면을 건너뛴 사용자를 위해, 홈 최초 진입 시
+  // 마지막 검증 기기로 조용히 연결을 시도한다. 실패해도 무해 —
+  // 연결 카드가 '연결 안 됨'을 유지하고 수동 경로가 그대로 동작한다.
+  // 외출로 하루 종일 끊겨 있다 귀가한 시나리오를 위해, 앱이 포그라운드로
+  // 복귀할 때마다(30초 스로틀) 미연결이면 재시도한다 — mount 1회 실패가
+  // 세션 내내 미연결로 고착되는 것을 방지 (usbState 자동 동기화 트리거의
+  // 전제이기도 하다).
+  useEffect(() => {
+    let lastAttempt = 0;
+    const attempt = () => {
+      if (useDeviceStore.getState().isConnected) return;
+      const now = Date.now();
+      if (now - lastAttempt < 30_000) return;
+      lastAttempt = now;
+      bleManager.tryReconnectLastDevice().catch(() => {});
+    };
+    attempt();
+    const sub = AppState.addEventListener('change', state => {
+      if (state === 'active') attempt();
+    });
+    return () => sub.remove();
+  }, []);
+
+  // 절대 위치 탭바(65 + 시스템 인셋)에 콘텐츠 하단이 가려지지 않도록
+  // 스크롤 하단 여백을 유동 확보한다 (전 탭 화면 공통 패턴)
+  const insets = useSafeAreaInsets();
+  const scrollPadBottom = 65 + insets.bottom + 24;
+
+  // '오늘' 기준일 — 화면에 머문 채 자정을 넘겨도 카운트가 스테일이 되지
+  // 않도록, 포그라운드 복귀 시 날짜가 바뀌었으면 갱신한다.
+  const [dayStamp, setDayStamp] = useState(() => Date.now());
+  useEffect(() => {
+    const refresh = () =>
+      setDayStamp(prev =>
+        new Date(prev).toDateString() === new Date().toDateString() ? prev : Date.now(),
+      );
+    const sub = AppState.addEventListener('change', s => {
+      if (s === 'active') refresh();
+    });
+    return () => sub.remove();
+  }, []);
+
+  // 파생 카운트는 events·기준일이 실제로 바뀔 때만 재계산 — 동기화/분석
+  // 파이프라인이 도는 동안 updateEvent마다 최대 2,000건 × 3회 필터(Date
+  // 파싱 포함)가 매 렌더 반복되는 것을 방지한다.
+  const { todayEventsCount, pendingCount, analyzedCount } = useMemo(() => {
+    const today = new Date(dayStamp).toDateString();
+    let todayCnt = 0, pendingCnt = 0, analyzedCnt = 0;
+    for (const e of events) {
+      if (new Date(e.timestamp).toDateString() === today) todayCnt++;
+      if (e.transferStatus === 'pending_media') pendingCnt++;
+      if (e.analysisStatus === 'completed') analyzedCnt++;
+    }
+    return { todayEventsCount: todayCnt, pendingCount: pendingCnt, analyzedCount: analyzedCnt };
+  }, [events, dayStamp]);
 
   return (
     <GradientBackground>
-      <ScrollView style={s.root} contentContainerStyle={s.content}>
+      <ScrollView style={s.root} contentContainerStyle={[s.content, { paddingBottom: scrollPadBottom }]}>
         {/* ── 타이틀 ── */}
         <Text style={s.title}>DeFoTic</Text>
+        {patientName && (
+          <Text style={s.greeting}>{patientName}님, 오늘도 함께할게요</Text>
+        )}
 
         {/* ── 연결 상태 카드 (탭 → 기기 연결 화면) ── */}
         <TouchableOpacity activeOpacity={0.7} onPress={() => router.push('/pairing')}>
@@ -134,6 +214,23 @@ export default function MainHubScreen() {
           desc={pendingCount > 0 ? `동기화 대기 ${pendingCount}건 · AI 상황 분석` : 'AI 상황 분석 결과 보기'}
           onPress={() => router.push('/(tabs)/analysis')}
         />
+
+        {/* ── 의료진 공유 코드 ──
+            의사는 이 코드로 의료진 대시보드에서 데이터를 열람한다.
+            (원격 열람은 Firebase 설정 후 활성 — 미설정 시에도 코드는
+            미리 발급되어 안내가 가능하다) */}
+        {patientCode && (
+          <View style={s.codeCard}>
+            <View style={[s.iconWrap, { backgroundColor: 'rgba(155, 89, 208, 0.10)' }]}>
+              <Ionicons name="medkit-outline" size={20} color={theme.colors.primary} />
+            </View>
+            <View style={s.cardInfo}>
+              <Text style={s.cardTitle}>의료진 공유 코드</Text>
+              <Text style={s.cardDesc}>진료 시 의료진에게 알려주세요</Text>
+            </View>
+            <Text style={s.codeValue}>{patientCode}</Text>
+          </View>
+        )}
       </ScrollView>
     </GradientBackground>
   );
@@ -178,10 +275,35 @@ const s = StyleSheet.create({
     paddingBottom: 100,
   },
 
+  // ── 의료진 공유 코드 카드 ──
+  codeCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(255,255,255,0.55)',
+    borderRadius: 16,
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+    marginBottom: 10,
+    borderWidth: 0.5,
+    borderColor: 'rgba(255,255,255,0.6)',
+  },
+  codeValue: {
+    fontSize: 18,
+    fontWeight: '800',
+    letterSpacing: 2,
+    color: theme.colors.primaryDark,
+  },
+
   title: {
     fontSize: 26,
     fontWeight: '700',
     color: theme.colors.textPrimary,
+    marginBottom: 16,
+  },
+  greeting: {
+    fontSize: 13,
+    color: theme.colors.textSecondary,
+    marginTop: -12,
     marginBottom: 16,
   },
 

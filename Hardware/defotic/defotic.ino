@@ -9,12 +9,17 @@
 
 int16_t *audioBuffer = nullptr;
 volatile size_t audioWriteIndex = 0;
-bool ticDetected = false;
+volatile uint32_t audioTotalSamples = 0;
+volatile bool ticDetected = false;
 volatile float lastConfidence = 0.0f;
+volatile float lastAiLevel = 0.0f;
+volatile int32_t lastAudioPeak = 0;
+volatile uint32_t lastAiWindowRms = 0;
+volatile bool sdFsReady = true;
 volatile bool eventSaving = false;
-int frameIndex = 0;
-String lastImagePath = "";
-unsigned long lastCaptureTime = 0;
+uint8_t *snapshotBuf = nullptr;
+uint8_t *snapshotStaging = nullptr;
+volatile size_t snapshotLen = 0;
 bool started = false;
 
 // =====================================================
@@ -44,6 +49,19 @@ void setup() {
     }
     memset(audioBuffer, 0, AUDIO_BUFFER_SIZE * sizeof(int16_t));
 
+    // 4. 라이브 스냅샷 버퍼 (PSRAM 2×48KB) — 실패 시 썸네일만 비활성(치명 아님)
+    snapshotBuf = (uint8_t *)ps_malloc(SNAPSHOT_MAX_BYTES);
+    snapshotStaging = (uint8_t *)ps_malloc(SNAPSHOT_MAX_BYTES);
+    if (snapshotBuf == nullptr || snapshotStaging == nullptr) {
+        // 반쪽 할당이면 성공한 블록을 반납하고 기능 전체 비활성 —
+        // free 없이 null 대입만 하면 성공한 48KB 블록이 도달 불능 누수가 된다.
+        free(snapshotBuf);
+        free(snapshotStaging);
+        snapshotBuf = nullptr;
+        snapshotStaging = nullptr;
+        Serial.println("SNAPSHOT BUFFER MALLOC FAIL — thumbnails disabled");
+    }
+
     Serial.println("=========================================");
     Serial.println("CRITICAL: BLE TIME SYNC REQUIRED TO START");
     Serial.println("=========================================");
@@ -53,7 +71,15 @@ void setup() {
 // LOOP
 // =====================================================
 void loop() {
-    // [★핵심 변경] 시간 동기화(timeSynced)가 안 되었으면 아예 아무것도 하지 않고 대기합니다.
+    // ── 녹화 태스크 기동 전 구간 ──
+    // 게이트가 없으므로(데이터 상시 서비스) 호스트는 이 구간에도 자유롭게
+    // 드라이브를 읽는다. 세션 관측(SUSPEND 유예 판정)만 유지 — 호스트가
+    // 이 구간에 쓴 내용은 eventTask 기동 경로의 fresh 재마운트가 재판독한다.
+    if (!started) {
+        usbMscTick();
+    }
+
+    // 시간 동기화(timeSynced)가 완료될 때까지는 아무것도 하지 않고 대기한다.
     if (!timeSynced) {
         static unsigned long lastNotify = 0;
         if (millis() - lastNotify > 5000) { // 5초마다 경고 출력
@@ -72,7 +98,16 @@ void loop() {
         Serial.println("=========================================");
 
         // 시간 동기화 확인 후에만 각 태스크 코어 할당 및 구동 시작
-        xTaskCreatePinnedToCore(audioTask, "audioTask", 8192, NULL, 1, NULL, 0);
+        //
+        // 코어/우선순위 배치:
+        //  - audioTask(core 0, prio 2): I2S 소비 전담 생산자. I2S 드라이버의
+        //    설치/복구도 이 태스크가 수행한다(코어 간 인터럽트 해제 불가
+        //    제약). 같은 코어의 다른 태스크보다 높은 우선순위로 i2s_read
+        //    주기를 보장 — DMA 오버런(→ S3 RX 스톨)의 마지막 방어선.
+        //  - audioWriterTask(core 0, prio 1): ADPCM 인코딩 + WAV 기록.
+        //    SD가 수백 ms 멈춰도 링 버퍼(180s)가 흡수하므로 낮은 우선순위.
+        xTaskCreatePinnedToCore(audioTask, "audioTask", 8192, NULL, 2, NULL, 0);
+        xTaskCreatePinnedToCore(audioWriterTask, "audioWriter", 8192, NULL, 1, NULL, 0);
         xTaskCreatePinnedToCore(cameraTask, "cameraTask", 8192, NULL, 1, NULL, 1);
         xTaskCreatePinnedToCore(aiTask, "aiTask", 16384, NULL, 1, NULL, 1);
         xTaskCreatePinnedToCore(eventTask, "eventTask", 16384, NULL, 1, NULL, 1);

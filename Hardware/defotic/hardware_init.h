@@ -16,7 +16,7 @@ extern BLECharacteristic *pCharacteristic;
 
 extern bool deviceConnected;
 
-extern bool timeSynced;
+extern volatile bool timeSynced;
 
 extern SemaphoreHandle_t sdMutex;
 void initHardware();
@@ -26,17 +26,14 @@ void initHardware();
 // INIT
 // ==========================================
 
-  
-
-void initI2S();
+// (선언의 단일 기준과 호출 코어 제약은 config.h 참조)
+bool initI2S();
 
 void initCamera();
 
 void initBLE();
 
 void initSD();
-
-void initTimeSync();
 
 // ==========================================
 // TASK

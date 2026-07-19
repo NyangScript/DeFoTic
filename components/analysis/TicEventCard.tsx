@@ -1,5 +1,5 @@
 import React from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator, Image } from 'react-native';
 import { theme } from '../../constants/theme';
 import { TicEvent } from '../../types/tic-event';
 import { Ionicons } from '@expo/vector-icons';
@@ -7,6 +7,10 @@ import { Ionicons } from '@expo/vector-icons';
 interface TicEventCardProps {
   event: TicEvent;
   onPress?: (event: TicEvent) => void;
+  // 컴팩트 1줄 행 — 미디어 없는 '횟수만 기록' 이벤트처럼 정보량이 적은
+  // 항목이 풀사이즈 카드로 도배되는 것을 막는 밀도 옵션.
+  // 시간·상태 뱃지만 한 줄로 보여주고, 상세는 동일하게 탭으로 연다.
+  compact?: boolean;
 }
 
 type CardState = {
@@ -28,6 +32,18 @@ function resolveState(event: TicEvent): CardState {
       badge: '동기화 대기',
       badgeBg: 'rgba(255, 150, 0, 0.12)',
       badgeColor: '#B96F00',
+    };
+  }
+  // 미디어 없이 감지만 기록된 이벤트 (기기 전송 중 감지 등) —
+  // 동기화 대기도 분석도 없는 완결 상태다.
+  if (event.transferStatus === 'no_media') {
+    return {
+      icon: 'pulse-outline',
+      iconBg: 'rgba(155, 89, 208, 0.10)',
+      iconColor: theme.colors.primary,
+      badge: '기록됨',
+      badgeBg: 'rgba(155, 89, 208, 0.12)',
+      badgeColor: theme.colors.primaryDark,
     };
   }
   if (event.analysisStatus === 'analyzing') {
@@ -78,7 +94,9 @@ function resolveState(event: TicEvent): CardState {
   };
 }
 
-export const TicEventCard = ({ event, onPress }: TicEventCardProps) => {
+// React.memo: 이벤트 1건 유입마다 목록 전체(수백 카드 가능)가 리렌더되지
+// 않도록 — event 참조가 바뀐 카드만 다시 그린다.
+export const TicEventCard = React.memo(({ event, onPress, compact }: TicEventCardProps) => {
   const state = resolveState(event);
 
   const time = new Date(event.timestamp).toLocaleTimeString('ko-KR', {
@@ -86,9 +104,29 @@ export const TicEventCard = ({ event, onPress }: TicEventCardProps) => {
     minute: '2-digit',
   });
 
+  if (compact) {
+    return (
+      <TouchableOpacity activeOpacity={0.7} onPress={() => onPress && onPress(event)}>
+        <View style={s.compactRow}>
+          <View style={[s.compactIcon, { backgroundColor: state.iconBg }]}>
+            <Ionicons name={state.icon} size={13} color={state.iconColor} />
+          </View>
+          <Text style={s.compactTime}>{time}</Text>
+          <Text style={s.compactTitle} numberOfLines={1}>
+            {event.transferStatus === 'no_media' ? '틱 기록됨' : '틱 이벤트'}
+          </Text>
+          <View style={[s.badge, { backgroundColor: state.badgeBg }]}>
+            <Text style={[s.badgeText, { color: state.badgeColor }]}>{state.badge}</Text>
+          </View>
+          <Ionicons name="chevron-forward" size={14} color={theme.colors.textSecondary} />
+        </View>
+      </TouchableOpacity>
+    );
+  }
+
   const title = event.aiAnalysis
     ? event.aiAnalysis.situation
-    : event.transferStatus === 'pending_media'
+    : event.transferStatus === 'pending_media' || event.transferStatus === 'no_media'
       ? '틱 기록됨'
       : event.analysisStatus === 'analyzing'
         ? 'AI 상황 분석 중'
@@ -99,24 +137,36 @@ export const TicEventCard = ({ event, onPress }: TicEventCardProps) => {
   const desc = event.aiAnalysis
     ? event.aiAnalysis.ticDetail
     : event.transferStatus === 'pending_media'
-      ? 'C-to-C 연결 시 자동으로 동기화됩니다'
-      : event.analysisStatus === 'analyzing'
-        ? '영상·음성을 바탕으로 상황을 분석하고 있어요'
-        : event.analysisStatus === 'failed'
-          ? '카드를 눌러 상세 정보를 확인하세요'
-          : 'AI 분석이 곧 시작됩니다';
+      ? 'USB 케이블로 연결하면 자동으로 동기화됩니다'
+      : event.transferStatus === 'no_media'
+        ? '기기 사용 중 감지되어 횟수만 기록되었습니다'
+        : event.analysisStatus === 'analyzing'
+          ? '영상·음성을 바탕으로 상황을 분석하고 있어요'
+          : event.analysisStatus === 'failed'
+            ? '카드를 눌러 상세 정보를 확인하세요'
+            : 'AI 분석이 곧 시작됩니다';
 
   return (
     <TouchableOpacity activeOpacity={0.7} onPress={() => onPress && onPress(event)}>
       <View style={s.card}>
-        {/* 좌측 상태 아이콘 */}
-        <View style={[s.iconWrap, { backgroundColor: state.iconBg }]}>
-          {state.spinner ? (
-            <ActivityIndicator size="small" color={state.iconColor} />
-          ) : (
-            <Ionicons name={state.icon} size={19} color={state.iconColor} />
-          )}
-        </View>
+        {/* 좌측: 틱 직전 실사 스냅샷 (있으면) — 없거나 분석 중이면 상태 아이콘.
+            스냅샷은 상황 맥락을 리스트에서 즉시 인지시키는 1차 뷰어다. */}
+        {event.thumbPath && !state.spinner ? (
+          <View style={s.thumbWrap}>
+            <Image source={{ uri: event.thumbPath }} style={s.thumb} resizeMode="cover" />
+            <View style={[s.thumbBadge, { backgroundColor: state.iconColor }]}>
+              <Ionicons name={state.icon} size={9} color="#fff" />
+            </View>
+          </View>
+        ) : (
+          <View style={[s.iconWrap, { backgroundColor: state.iconBg }]}>
+            {state.spinner ? (
+              <ActivityIndicator size="small" color={state.iconColor} />
+            ) : (
+              <Ionicons name={state.icon} size={19} color={state.iconColor} />
+            )}
+          </View>
+        )}
 
         {/* 본문 */}
         <View style={s.info}>
@@ -125,11 +175,9 @@ export const TicEventCard = ({ event, onPress }: TicEventCardProps) => {
             <View style={[s.badge, { backgroundColor: state.badgeBg }]}>
               <Text style={[s.badgeText, { color: state.badgeColor }]}>{state.badge}</Text>
             </View>
-            {typeof event.detectionConfidence === 'number' && !event.aiAnalysis && (
-              <Text style={s.confidence}>
-                신뢰도 {Math.round(event.detectionConfidence * 100)}%
-              </Text>
-            )}
+            {/* 원시 감지 신뢰도 수치는 목록에 노출하지 않는다:
+                환자가 증상 수치를 반복 의식하지 않게 하는 기획 의도 —
+                상세 모달의 감지 정보에서만 확인할 수 있다. */}
           </View>
 
           <Text style={s.title} numberOfLines={2}>{title}</Text>
@@ -150,7 +198,8 @@ export const TicEventCard = ({ event, onPress }: TicEventCardProps) => {
       </View>
     </TouchableOpacity>
   );
-};
+});
+TicEventCard.displayName = 'TicEventCard';
 
 const s = StyleSheet.create({
   card: {
@@ -173,6 +222,32 @@ const s = StyleSheet.create({
     marginRight: 12,
     alignSelf: 'flex-start',
     marginTop: 2,
+  },
+  thumbWrap: {
+    width: 44,
+    height: 44,
+    borderRadius: 12,
+    marginRight: 12,
+    alignSelf: 'flex-start',
+    marginTop: 2,
+  },
+  thumb: {
+    width: '100%',
+    height: '100%',
+    borderRadius: 12,
+    backgroundColor: '#1D1230',
+  },
+  thumbBadge: {
+    position: 'absolute',
+    right: -3,
+    bottom: -3,
+    width: 16,
+    height: 16,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1.5,
+    borderColor: '#fff',
   },
   info: {
     flex: 1,
@@ -197,10 +272,6 @@ const s = StyleSheet.create({
   badgeText: {
     fontSize: 10,
     fontWeight: '700',
-  },
-  confidence: {
-    fontSize: 10,
-    color: theme.colors.textSecondary,
   },
   title: {
     fontSize: 14,
@@ -228,5 +299,37 @@ const s = StyleSheet.create({
   tagText: {
     fontSize: 10,
     color: theme.colors.primaryDark,
+  },
+
+  // ── 컴팩트 1줄 행 ──
+  compactRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(255,255,255,0.42)',
+    borderRadius: 12,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    marginBottom: 6,
+    borderWidth: 0.5,
+    borderColor: 'rgba(255,255,255,0.5)',
+    gap: 8,
+  },
+  compactIcon: {
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  compactTime: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: theme.colors.primaryDark,
+  },
+  compactTitle: {
+    flex: 1,
+    fontSize: 13,
+    fontWeight: '500',
+    color: theme.colors.textPrimary,
   },
 });

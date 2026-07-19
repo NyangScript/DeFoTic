@@ -1,14 +1,94 @@
-import React, { useMemo } from 'react';
-import { View, Text, StyleSheet, ScrollView } from 'react-native';
+import React, { useMemo, useState } from 'react';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Alert, ActivityIndicator } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { theme } from '../../constants/theme';
 import { BarChart } from '../../components/charts/BarChart';
 import { GradientBackground } from '../../components/ui/GradientBackground';
 import { useEventStore } from '../../stores/useEventStore';
+import { trainingDataStore } from '../../services/data/TrainingDataStore';
+import { eiDatasetExporter } from '../../services/data/EIDatasetExporter';
 import { Ionicons } from '@expo/vector-icons';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 export default function RecordScreen() {
   const events = useEventStore((state) => state.events);
+  const [isExporting, setIsExporting] = useState(false);
+  const [isExportingEI, setIsExportingEI] = useState(false);
+
+  // ── LoRA 파인튜닝 학습 데이터셋 내보내기 ──
+  // 라벨된 이벤트만 OpenAI messages 포맷 JSONL(train/val 시간 분할 +
+  // 매니페스트)로 내보낸다. 확정(confirmed)=긍정 예시, 오탐(false_positive)=
+  // {"isTic": false} 부정 예시 (TrainingDataStore.exportDatasetToSaf 참조).
+  const handleExportDataset = async () => {
+    if (isExporting) return;
+    setIsExporting(true);
+    try {
+      const stats = await trainingDataStore.exportDatasetToSaf();
+      if (stats === null) return; // 사용자가 폴더 선택 취소
+      if (stats.exported === 0) {
+        const reason =
+          stats.skippedUnlabeled > 0
+            ? `분석된 기록 ${stats.skippedUnlabeled}건이 있지만 확인 표시가 없습니다.\n` +
+              '이벤트 상세에서 "실제 틱 맞음" 또는 "틱 아님(오탐)"을 먼저 표시해주세요.'
+            : stats.skippedLegacyPrompt > 0
+              ? `이전 버전에서 분석된 기록이라 제외했습니다.\n` +
+                '해당 이벤트를 "다시 분석하기"하면 포함할 수 있습니다.'
+              : stats.skippedFallbackHeavy > 0
+                ? '분석 품질이 낮은 기록이라 제외했습니다.\n해당 이벤트를 다시 분석한 뒤 시도해주세요.'
+                : 'AI 분석이 완료된 이벤트가 아직 없습니다. 분석이 누적되면 학습 데이터가 자동으로 수집됩니다.';
+        Alert.alert('내보낼 데이터 없음', reason);
+      } else {
+        // 파일 포맷 상세(train/val, jsonl, manifest)는 개발 문서로 충분 —
+        // 사용자 안내는 결과와 위치만 표시한다.
+        Alert.alert(
+          '내보내기 완료',
+          `학습 데이터 ${stats.exported}건을 저장했습니다.\n` +
+            `· 실제 틱 ${stats.positives}건 / 오탐 ${stats.negatives}건\n` +
+            '선택한 폴더에서 파일을 확인할 수 있습니다.',
+        );
+      }
+    } catch (e: any) {
+      console.error('[Record] Dataset export failed:', e);
+      Alert.alert('내보내기 실패', e?.message || '데이터셋 저장 중 오류가 발생했습니다.');
+    } finally {
+      setIsExporting(false);
+    }
+  };
+
+  // ── EI 온디바이스 재학습 오디오 내보내기 ──
+  // 라벨된 이벤트(맞음/오탐)의 대표 오디오를 IMA ADPCM→PCM16 변환 후
+  // ei_dataset_*/abnormal|normal 폴더 구조로 저장한다.
+  const handleExportEIDataset = async () => {
+    if (isExportingEI) return;
+    const counts = eiDatasetExporter.labeledCount();
+    if (counts.abnormal + counts.normal === 0) {
+      Alert.alert(
+        '내보낼 오디오 없음',
+        '확인 표시된 이벤트가 없습니다. 이벤트 상세에서 "실제 틱 맞음" 또는 "틱 아님(오탐)"을 먼저 표시해주세요.\n(음성이 동기화된 이벤트만 내보낼 수 있습니다)',
+      );
+      return;
+    }
+    setIsExportingEI(true);
+    try {
+      const result = await eiDatasetExporter.exportToSaf();
+      if (result === null) return; // 폴더 선택 취소
+      Alert.alert(
+        '내보내기 완료',
+        `실제 틱 ${result.abnormal}건 · 오탐 ${result.normal}건의 음성을 저장했습니다.` +
+          (result.failed.length > 0 ? `\n변환에 실패한 ${result.failed.length}건은 건너뛰었습니다.` : '') +
+          '\n선택한 폴더에서 파일을 확인할 수 있습니다.',
+      );
+    } catch (e: any) {
+      console.error('[Record] EI dataset export failed:', e);
+      Alert.alert('내보내기 실패', e?.message || '오디오 변환 중 오류가 발생했습니다.');
+    } finally {
+      setIsExportingEI(false);
+    }
+  };
+
+  // 절대 위치 탭바(65 + 시스템 인셋)에 콘텐츠 하단이 가려지지 않도록
+  const insets = useSafeAreaInsets();
+  const scrollPadBottom = 65 + insets.bottom + 24;
 
   const { total, todayCount, weeklyData, labels, typeStats, vulnerableWindow, recentEvents } = useMemo(() => {
     const now = new Date();
@@ -76,7 +156,7 @@ export default function RecordScreen() {
 
   return (
     <GradientBackground>
-      <ScrollView style={s.root} contentContainerStyle={s.content}>
+      <ScrollView style={s.root} contentContainerStyle={[s.content, { paddingBottom: scrollPadBottom }]}>
         {/* ── 타이틀 ── */}
         <Text style={s.title}>데이터 기록</Text>
 
@@ -152,14 +232,74 @@ export default function RecordScreen() {
                   <Text style={s.recentDesc}>{eventStatusLabel(e)}</Text>
                 </View>
                 <Ionicons
-                  name={e.analysisStatus === 'completed' ? 'checkmark-circle' : 'time-outline'}
+                  name={
+                    e.analysisStatus === 'completed' || e.transferStatus === 'no_media'
+                      ? 'checkmark-circle'   // no_media는 완결 상태 — 대기 아이콘 금지
+                      : 'time-outline'
+                  }
                   size={16}
-                  color={e.analysisStatus === 'completed' ? theme.colors.primary : theme.colors.textSecondary}
+                  color={
+                    e.analysisStatus === 'completed' || e.transferStatus === 'no_media'
+                      ? theme.colors.primary
+                      : theme.colors.textSecondary
+                  }
                 />
               </View>
             ))
           )}
         </View>
+
+        {/* ── 감지 정확도 개선 (내보내기 기능 유지, 문구만 사용자 언어로 —
+            파일 포맷/도구 명칭(LoRA·JSONL·EI 등)은 개발 문서에만 둔다) ── */}
+        <Text style={s.section}>감지 정확도 개선</Text>
+        <TouchableOpacity activeOpacity={0.75} onPress={handleExportDataset} disabled={isExporting}>
+          <View style={s.card}>
+            <View style={s.exportRow}>
+              <View style={s.recentIconWrap}>
+                {isExporting ? (
+                  <ActivityIndicator size="small" color={theme.colors.primaryDark} />
+                ) : (
+                  <Ionicons name="download-outline" size={16} color={theme.colors.primaryDark} />
+                )}
+              </View>
+              <View style={s.recentInfo}>
+                <Text style={s.exportTitle}>
+                  {isExporting ? '내보내는 중...' : 'AI 분석 학습 데이터 내보내기'}
+                </Text>
+                <Text style={s.recentDesc}>
+                  확인·오탐 표시한 기록을 분석 모델 학습용 파일로 저장합니다
+                </Text>
+              </View>
+              <Ionicons name="chevron-forward" size={16} color={theme.colors.textSecondary} />
+            </View>
+          </View>
+        </TouchableOpacity>
+
+        {/* EI 온디바이스 모델 재학습 데이터셋 —
+            라벨된 실기기 오디오를 ADPCM→PCM 변환해 abnormal/normal 폴더
+            구조로 저장. 실기기 분포 재학습이 감지 정확도의 근본 해법. */}
+        <TouchableOpacity activeOpacity={0.75} onPress={handleExportEIDataset} disabled={isExportingEI}>
+          <View style={s.card}>
+            <View style={s.exportRow}>
+              <View style={s.recentIconWrap}>
+                {isExportingEI ? (
+                  <ActivityIndicator size="small" color={theme.colors.primaryDark} />
+                ) : (
+                  <Ionicons name="mic-outline" size={16} color={theme.colors.primaryDark} />
+                )}
+              </View>
+              <View style={s.recentInfo}>
+                <Text style={s.exportTitle}>
+                  {isExportingEI ? '변환·내보내는 중...' : '틱 감지 학습 오디오 내보내기'}
+                </Text>
+                <Text style={s.recentDesc}>
+                  확인·오탐 표시한 기록의 음성을 기기 학습용으로 저장합니다
+                </Text>
+              </View>
+              <Ionicons name="chevron-forward" size={16} color={theme.colors.textSecondary} />
+            </View>
+          </View>
+        </TouchableOpacity>
       </ScrollView>
     </GradientBackground>
   );
@@ -177,6 +317,7 @@ function formatEventTime(timestamp: string) {
 function eventStatusLabel(e: { transferStatus?: string; analysisStatus?: string; type: string }) {
   const typeLabel = e.type === 'vocal' ? '음성 틱' : e.type === 'motor' ? '운동 틱' : '복합 틱';
   if (e.transferStatus === 'pending_media') return `${typeLabel} · 미디어 동기화 대기`;
+  if (e.transferStatus === 'no_media') return `${typeLabel} · 기록됨`;
   if (e.analysisStatus === 'analyzing') return `${typeLabel} · AI 분석 중`;
   if (e.analysisStatus === 'completed') return `${typeLabel} · 분석 완료`;
   if (e.analysisStatus === 'failed') return `${typeLabel} · 분석 실패`;
@@ -369,5 +510,17 @@ const s = StyleSheet.create({
   recentDesc: {
     fontSize: 12,
     color: theme.colors.textSecondary,
+  },
+
+  // ── 학습 데이터 내보내기 ──
+  exportRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  exportTitle: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: theme.colors.textPrimary,
+    marginBottom: 1,
   },
 });

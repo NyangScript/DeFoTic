@@ -7,14 +7,16 @@ import {
   ActivityIndicator,
   TouchableOpacity,
   Alert,
+  Platform,
 } from 'react-native';
-import { useRouter } from 'expo-router';
+import { Redirect, useRouter } from 'expo-router';
 import { GradientButton } from '../components/ui/GradientButton';
 import { theme } from '../constants/theme';
 import { BLE_CONFIG } from '../constants/ble-config';
 import { BleDevice } from '../types/ble';
 import { GradientBackground } from '../components/ui/GradientBackground';
 import { bleManager } from '../services/ble/BleManager';
+import { useDeviceStore } from '../stores/useDeviceStore';
 import { Ionicons } from '@expo/vector-icons';
 
 // ═══════════════════════════════════════════
@@ -67,6 +69,13 @@ function deviceIcon(name: string | null): keyof typeof Ionicons.glyphMap {
 // ═══════════════════════════════════════════
 
 export default function PairingScreen() {
+  // 웹 = 의료진 전용: BLE 페어링은 모바일 전용 동선이다. 직접 URL로
+  // 진입해도 의료진 랜딩으로 보낸다 (Platform.OS는 런타임 불변이라
+  // 훅 이전 조기 반환이 안전).
+  if (Platform.OS === 'web') {
+    return <Redirect href="/doctor" />;
+  }
+
   const router = useRouter();
   const [isScanning, setIsScanning] = useState(false);
   const [devices, setDevices] = useState<BleDevice[]>([]);
@@ -102,6 +111,34 @@ export default function PairingScreen() {
       bleManager.stopContinuousScan();
     };
   }, [startScanning]);
+
+  // ── 백그라운드 자동 재연결과의 경합 해소 ──
+  // 홈의 silent 재연결이 이 화면과 병행할 수 있다: 재연결이 이기면 기기가
+  // 광고를 멈춰(연결 중 광고 정지) 스캔 목록에 영영 안 뜨고, 사용자는
+  // '검색된 기기 없음' 막다른 길에서 연결 실패로 오인한다. 이 화면에
+  // 있는 동안 '새로' 성립된 연결을 감지하면 수동 연결과 동일한 성공
+  // 동선을 태운다. (마운트 시점에 이미 연결돼 있던 경우는 제외 —
+  // 연결 중에도 기기 교체를 위해 이 화면에 들어올 수 있다)
+  const isConnected = useDeviceStore((state) => state.isConnected);
+  const connectedAtMount = useRef<boolean | null>(null);
+  useEffect(() => {
+    if (connectedAtMount.current === null) {
+      connectedAtMount.current = isConnected;
+      if (isConnected) return;   // 마운트 시 이미 연결됨 — 자동 이탈 금지
+    }
+    if (!isConnected) {
+      connectedAtMount.current = false;  // 이후의 신규 연결은 성공 동선 대상
+      return;
+    }
+    if (connectedAtMount.current) return; // 마운트 시 연결 상태가 유지 중
+    if (connectingId) return;  // 수동 연결 진행 중이면 그 경로가 내비게이션 처리
+    if (router.canGoBack()) {
+      router.back();
+    } else {
+      router.replace('/login');
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isConnected]);
 
   // ── 기기 연결 ──
   const handleConnect = useCallback(async (device: BleDevice) => {
@@ -180,6 +217,8 @@ export default function PairingScreen() {
             </Text>
             <View style={s.meta}>
               <SignalBars rssi={item.rssi} />
+              {/* 신호 강도 수치 — 아이콘만으로는 미세한 세기 차이를 비교할 수
+                  없어 dBm 텍스트를 병기한다 */}
               <Text style={s.rssi}>
                 {item.rssi != null ? `${item.rssi} dBm` : ''}
               </Text>
@@ -217,13 +256,13 @@ export default function PairingScreen() {
           <View style={s.bannerLeft}>
             <Ionicons name="bluetooth" size={16} color={theme.colors.primary} />
             <Text style={s.bannerStatus}>
-              {scanError ? '오류' : '사용 중'}
+              {scanError ? '오류' : isScanning ? '검색 중' : '대기 중'}
             </Text>
           </View>
           {isScanning && <ActivityIndicator size="small" color={theme.colors.primary} />}
         </View>
         <Text style={s.bannerDesc}>
-          연결하려는 기기가 등록 모드로 설정되었는지 확인하세요.{'\n'}주변 기기에서 내 휴대전화를 검색할 수 있습니다.
+          DeFoTic 기기의 전원이 켜져 있는지 확인해주세요.{'\n'}주변 기기를 자동으로 검색하고 있습니다.
         </Text>
       </View>
 
@@ -389,7 +428,6 @@ const s = StyleSheet.create({
     color: theme.colors.textSecondary,
     marginLeft: 5,
   },
-
   // ── 신호 바 ──
   signalWrap: {
     flexDirection: 'row',

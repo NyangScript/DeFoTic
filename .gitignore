@@ -33,6 +33,10 @@ yarn-error.*
 *.pem
 
 # local env files
+# (.env에 EXPO_PUBLIC_GEMINI_API_KEY / EXPO_PUBLIC_FIREBASE_* 키를 넣는 경우
+#  커밋되지 않도록 전체 .env 계열을 무시한다)
+.env
+.env.*
 .env*.local
 
 # typescript
@@ -41,3 +45,9 @@ yarn-error.*
 # generated native folders
 /ios
 /android
+
+# project-local artifacts (개발 산출물 — 소스 아님)
+Hardware.zip
+ESP32 serial log*.txt
+*작품설명서*.pdf
+*.output
